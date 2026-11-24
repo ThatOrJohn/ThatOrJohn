@@ -4,6 +4,7 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { geoContains, geoDistance, geoGraticule, geoInterpolate, geoOrthographic, geoPath } from 'd3-geo';
 import { itinerary } from './route.mjs';
 import { drawEncounter, encounterLabel } from './encounters.mjs';
+import { drawScene, sceneLabel, scenePose } from './scenes.mjs';
 
 const [date, framesDirectory] = process.argv.slice(2);
 if (!framesDirectory) throw new Error('Usage: node render.mjs YYYY-MM-DD path/to/new-frames-directory');
@@ -22,6 +23,7 @@ const ctx = canvas.getContext('2d');
 const projection = geoOrthographic().translate([centerX, centerY]).scale(radius).precision(0.55);
 const path = geoPath(projection, ctx);
 const graticule = geoGraticule().step([15, 15])();
+const dateLine = { type: 'LineString', coordinates: [[180, -72], [180, 13]] };
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const ease = p => p * p * (3 - 2 * p);
 
@@ -79,7 +81,7 @@ function drawGlobe() {
   trace({ type: 'Sphere' }, '#9ad2f3aa', 1);
 }
 
-function drawCaption(leg, landed, label) {
+function drawCaption(leg, landed, label, place = leg.to) {
   ctx.textBaseline = 'alphabetic';
   ctx.font = 'bold 49px Arial, "Liberation Sans", sans-serif';
   ctx.fillStyle = '#f5efe5';
@@ -93,20 +95,20 @@ function drawCaption(leg, landed, label) {
   ctx.fillText(detail, 32, 140, 335);
   ctx.font = 'bold 34px Arial, "Liberation Sans", sans-serif';
   ctx.fillStyle = '#ffaf70';
-  ctx.fillText(leg.to.name, 30, 178, 343);
+  ctx.fillText(place.name, 30, 178, 343);
   ctx.font = '16px Arial, "Liberation Sans", sans-serif';
   ctx.fillStyle = '#bfccde';
-  ctx.fillText(leg.to.country, 32, 203, 334);
+  ctx.fillText(place.country, 32, 203, 334);
 }
 
-function drawBolt(point, time, landed, dodge) {
+function drawBolt(point, time, landed, dodge, pose) {
   const [x, y] = point;
   const size = 56;
   const wobble = Math.sin(time * 6);
   circle(x, y, 3, '#ffaf7099');
   ctx.save();
-  ctx.translate(x - dodge * 8, y - (landed ? 4 : 12) + wobble * 1.8 + dodge * 15);
-  ctx.rotate(wobble * 0.045 - dodge * 0.24);
+  ctx.translate(x + pose.x - dodge * 8, y + pose.y - (landed ? 4 : 12) + wobble * 1.8 + dodge * 15);
+  ctx.rotate(pose.tilt + wobble * 0.045 - dodge * 0.24);
   if (!landed) {
     for (let index = 0; index < 3; index++) {
       const age = (time * 2.7 + index / 3) % 1;
@@ -131,8 +133,13 @@ function nearbyWater(interpolate) {
 }
 
 function drawFrame(leg, frame, time) {
-  const progress = Math.min(1, frame / leg.flightFrames);
+  const flightFrame = frame - leg.departureHold;
+  const progress = clamp(flightFrame / leg.flightFrames, 0, 1);
   const landed = progress === 1;
+  const geyser = leg.departureHold > 0 && frame < 22;
+  const scene = geyser ? 'geyser' : landed ? leg.arrivalScene : null;
+  const phase = geyser ? frame / 22 : (flightFrame - leg.flightFrames) / leg.arrivalFrames;
+  const pose = scenePose(scene, phase);
   const overshoot = Math.min(0.11, 0.046 / leg.interpolate.distance);
   const position = progress < 0.86
     ? ease(progress / 0.86) * (1 + overshoot)
@@ -157,6 +164,10 @@ function drawFrame(leg, frame, time) {
   drawBackground();
   if (leg.egg === 'comet') drawEncounter(ctx, encounter);
   drawGlobe();
+  if (scene === 'dateline') {
+    ctx.setLineDash([3, 4]);
+    trace(dateLine, '#8ce4eac3', 1.5);
+  }
   ctx.setLineDash(landed ? [] : [2, 4]);
   trace(leg.route, '#ffb37de1', 1.3);
   ctx.setLineDash([]);
@@ -167,10 +178,13 @@ function drawFrame(leg, frame, time) {
   }
   if (leg.egg !== 'comet') drawEncounter(ctx, encounter);
 
+  const scenePoint = projection(geyser ? leg.from.point : leg.to.point);
+  drawScene(ctx, scene, phase, scenePoint, pose);
+
   const dodge = leg.egg === 'satellite' && eggProgress > 0 && eggProgress < 1
     ? Math.pow(Math.sin(Math.PI * eggProgress), 4) : 0;
-  if (visible(point)) drawBolt(surface, time, landed, dodge);
-  drawCaption(leg, landed, encounterLabel(encounter));
+  if (visible(point)) drawBolt(surface, time, landed || flightFrame < 0, dodge, pose);
+  drawCaption(leg, landed, sceneLabel(scene) || encounterLabel(encounter), geyser ? leg.from : leg.to);
   ctx.strokeStyle = '#3d526d';
   ctx.lineWidth = 1;
   ctx.strokeRect(0.5, 0.5, width - 1, height - 1);
@@ -181,9 +195,12 @@ let frameNumber = 0;
 for (const leg of legs) {
   leg.interpolate = geoInterpolate(leg.from.point, leg.to.point);
   leg.flightFrames = Math.round((1.6 + leg.interpolate.distance * 0.75) * fps);
+  leg.departureHold = leg.from.scene === 'geyser' ? 8 : 0;
+  leg.arrivalScene = leg.to.scene === 'geyser' ? undefined : leg.to.scene;
+  leg.arrivalFrames = leg.arrivalScene ? 30 : 9;
   leg.route = { type: 'LineString', coordinates: Array.from({ length: 33 }, (_, i) => leg.interpolate(i / 32)) };
   leg.water = leg.egg === 'whale' ? nearbyWater(leg.interpolate) : null;
-  for (let frame = 0; frame < leg.flightFrames + 9; frame++) {
+  for (let frame = 0; frame < leg.departureHold + leg.flightFrames + leg.arrivalFrames; frame++) {
     drawFrame(leg, frame, frameNumber / fps);
     const filename = `${String(frameNumber).padStart(4, '0')}.png`;
     await writeFile(join(framesDirectory, filename), canvas.toBuffer('image/png'));
@@ -191,4 +208,7 @@ for (const leg of legs) {
   }
 }
 
-console.log(`${date} ${legs.map(leg => `${leg.from.name} → ${leg.to.name} (${leg.egg})`).join(' · ')}`);
+console.log(`${date} ${legs.map(leg => {
+  const events = [leg.departureHold && 'geyser', leg.egg, leg.arrivalScene].filter(Boolean);
+  return `${leg.from.name} → ${leg.to.name}${events.length ? ` (${events.join(', ')})` : ''}`;
+}).join(' · ')}`);

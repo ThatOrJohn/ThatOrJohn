@@ -7,7 +7,7 @@ const labels = {
   whale: 'WHALE SIGHTING',
 };
 
-function ellipse(ctx, x, y, width, height, paint) {
+export function ellipse(ctx, x, y, width, height, paint) {
   ctx.beginPath();
   ctx.ellipse(x, y, width, height, 0, 0, Math.PI * 2);
   ctx.fillStyle = paint;
@@ -107,6 +107,7 @@ function ufo(ctx, phase) {
 }
 
 function opacity({ type, phase, travel, whaleOpacity }) {
+  if (!type) return 0;
   if (type === 'launch') return Math.max(0, Math.min(1, (0.47 - travel) * 9));
   if (type === 'whale') return whaleOpacity;
   return Math.max(0, Math.min(1, phase * 6, (1 - phase) * 6));

@@ -1,1 +1,1 @@
-![Bolt flies between five cities on a rotating Earth](assets/bolt-world-tour.webp)
+![Bolt flies around a rotating Earth with a new route each day](assets/bolt-world-tour.webp)

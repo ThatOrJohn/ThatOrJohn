@@ -1,0 +1,62 @@
+name: Bolt’s daily flight
+
+on:
+  schedule:
+    - cron: '37 7 * * *'
+      timezone: America/Chicago
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/bolt.yml'
+      - 'animation/**'
+
+concurrency:
+  group: bolt-profile-animation
+  cancel-in-progress: false
+
+jobs:
+  animate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      TZ: America/Chicago
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: animation/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: animation/requirements.txt
+      - name: Render today’s flight
+        run: |
+          npm ci --ignore-scripts --prefix animation
+          npm test --prefix animation
+          python -m pip install -r animation/requirements.txt
+          day=$(date +%F)
+          node animation/render.mjs "$day" "$RUNNER_TEMP/bolt-frames"
+          python animation/encode.py "$RUNNER_TEMP/bolt-frames" assets/bolt-world-tour.webp
+          echo "BOLT_DAY=$day" >> "$GITHUB_ENV"
+      - name: Publish the animation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git add -- assets/bolt-world-tour.webp
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          gh auth setup-git
+          git commit -m "Animate Bolt’s flight for $BOLT_DAY"
+          git push origin HEAD:main
